@@ -1,0 +1,15 @@
+-- SCHEMA REFERENCE ONLY: no business data; not a complete ordered migration.
+CREATE TABLE IF NOT EXISTS club_recharge_coupon_rule (
+ id BIGINT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100) NOT NULL,
+ min_amount DECIMAL(12,2) NOT NULL, coupon_id BIGINT NOT NULL, quantity INT NOT NULL DEFAULT 1,
+ status VARCHAR(16) NOT NULL DEFAULT 'disabled', created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+ KEY idx_rule_threshold(status,min_amount)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS club_recharge_reward (
+ id BIGINT PRIMARY KEY AUTO_INCREMENT, recharge_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
+ rule_id BIGINT NOT NULL, coupon_id BIGINT NOT NULL, quantity INT NOT NULL,
+ status VARCHAR(16) NOT NULL DEFAULT 'pending', last_error VARCHAR(255) NOT NULL DEFAULT '',
+ created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, issued_at DATETIME NULL,
+ UNIQUE KEY uk_reward_recharge(recharge_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
