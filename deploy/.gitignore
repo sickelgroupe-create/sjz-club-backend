@@ -1,0 +1,10 @@
+settings.env
+database/*.local.sql
+*.pem
+*.key
+*.p12
+*.pfx
+backups/
+uploads/
+__pycache__/
+

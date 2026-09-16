@@ -1,0 +1,24 @@
+[Unit]
+Description=SJZ Club API
+After=network.target
+
+[Service]
+Type=simple
+User=sjz
+Group=sjz
+WorkingDirectory=/opt/sjz-club
+EnvironmentFile=/etc/sjz-club/settings.env
+ExecStart=/usr/bin/java -Xms256m -Xmx768m -jar /opt/sjz-club/app.jar
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/sjz-club /var/log/sjz-club
+
+[Install]
+WantedBy=multi-user.target
+
