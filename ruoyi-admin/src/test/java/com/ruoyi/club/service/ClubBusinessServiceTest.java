@@ -70,6 +70,8 @@ class ClubBusinessServiceTest
         JdbcTemplate jdbc = org.mockito.Mockito.mock(JdbcTemplate.class);
         ClubCatalogService catalog = org.mockito.Mockito.mock(ClubCatalogService.class);
         ClubBusinessService service = new ClubBusinessService(jdbc, catalog);
+        when(jdbc.queryForList(org.mockito.ArgumentMatchers.contains("select status from club_order where id=(select order_id"), eq(8L)))
+                .thenReturn(Collections.singletonList(Collections.singletonMap("status", "completed")));
         Map<String, Object> settlement = new HashMap<>();
         settlement.put("id", 8L);
         settlement.put("provider_user_id", 4L);
@@ -78,7 +80,7 @@ class ClubBusinessServiceTest
         settlement.put("settlement_no", "ST8");
         settlement.put("order_id", 12L);
         settlement.put("provider_type", "player");
-        when(jdbc.queryForList(org.mockito.ArgumentMatchers.contains("club_order_settlement where id=?"), eq(8L))).thenReturn(Collections.singletonList(settlement));
+        when(jdbc.queryForList(org.mockito.ArgumentMatchers.startsWith("select * from club_order_settlement where id=?"), eq(8L))).thenReturn(Collections.singletonList(settlement));
         Map<String, Object> wallet = new HashMap<>();
         wallet.put("balance", new BigDecimal("10.00"));
         wallet.put("frozen", new BigDecimal("80.00"));

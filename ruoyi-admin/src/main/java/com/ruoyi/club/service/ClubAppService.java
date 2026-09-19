@@ -1,6 +1,7 @@
 package com.ruoyi.club.service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.sql.Date;
@@ -48,6 +49,9 @@ public class ClubAppService
 
     @org.springframework.beans.factory.annotation.Autowired
     private ClubAfterSaleService afterSale;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.transaction.PlatformTransactionManager transactionManager;
 
     @Value("${club.payment-mode:disabled}")
     private String paymentMode;
@@ -952,13 +956,28 @@ public class ClubAppService
         return true;
     }
 
-    @Transactional
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public int expireUnpaidOrders()
     {
         List<Long> ids = jdbc.queryForList(
-                "select id from club_order where status='unpaid' and payment_expires_at is not null and payment_expires_at<=now() order by id limit 200",
+                "select id from club_order where status='unpaid' and payment_expires_at is not null and payment_expires_at<=now() order by expiry_checked_at,id limit 200",
                 Long.class);
-        for (Long id : ids) expireUnpaidOrder(null, id);
+        org.springframework.transaction.support.TransactionTemplate isolated = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        isolated.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        for (Long id : ids)
+        {
+            try
+            {
+                // Commit retry ordering before the external close/query. Failed
+                // orders move behind unchecked rows even if this worker restarts.
+                isolated.execute(status -> jdbc.update("update club_order set expiry_checked_at=current_timestamp(6),updated_at=updated_at where id=? and status='unpaid'", id));
+                isolated.execute(status -> { expireUnpaidOrder(null, id); return null; });
+            }
+            catch (RuntimeException failure)
+            {
+                org.slf4j.LoggerFactory.getLogger(ClubAppService.class).warn("Order expiry pending: {} ({})", id, failure.getClass().getSimpleName());
+            }
+        }
         return ids.size();
     }
 
@@ -1107,7 +1126,22 @@ public class ClubAppService
 
     public List<Map<String, Object>> messages(Long userId)
     {
-        return jdbc.queryForList("select id,message_type as type,title,content,reference_type as referenceType,reference_id as referenceId,is_read as isRead,created_at as createdAt from club_message where user_id=? order by id desc", userId);
+        // A player can also be a buyer: route by ownership of this specific record, not account type.
+        return jdbc.queryForList("select m.id,m.message_type as type,m.title,m.content,m.reference_type as referenceType," +
+                "m.reference_id as referenceId,m.is_read as isRead,m.created_at as createdAt,case " +
+                "when o.user_id=m.user_id then concat('/pages/order/detail?id=',o.id) " +
+                "when o.provider_type='player' and o.provider_user_id=m.user_id then concat('/pages/workbench/order-detail?id=',o.id) " +
+                "when a.user_id=m.user_id then concat('/pages/aftersale/detail?id=',a.id) " +
+                "when a.provider_user_id=m.user_id then concat('/pages/aftersale/detail?id=',a.id,'&workbench=1') " +
+                "when r.user_id=m.user_id then concat('/pages/wallet/recharge-detail?id=',r.id) " +
+                "when w.user_id=m.user_id then concat('/pages/wallet/withdrawal-detail?id=',w.id) " +
+                "when m.reference_type='identity' then '/pages/settings/identity' " +
+                "when m.reference_type='application' then '/pages/apply/index' else '' end as targetUrl " +
+                "from club_message m left join club_order o on m.reference_type='order' and o.id=m.reference_id " +
+                "left join club_aftersale a on m.reference_type='aftersale' and a.id=m.reference_id " +
+                "left join club_recharge_order r on m.reference_type='recharge' and r.id=m.reference_id " +
+                "left join club_withdrawal w on m.reference_type='withdrawal' and w.id=m.reference_id " +
+                "where m.user_id=? order by m.id desc", userId);
     }
 
     public void readMessage(Long userId, Long messageId)
@@ -1146,6 +1180,38 @@ public class ClubAppService
         Map<String, Object> result = new HashMap<>(wallets.get(0));
         result.put("withdrawable",ClubWalletPolicy.withdrawable(result));
         result.put("records", jdbc.queryForList("select id,record_type as type,amount,balance_before as balanceBefore,balance_after as balanceAfter,frozen_after as frozenAfter,reference_no as referenceNo,order_id as orderId,counterparty_type as counterpartyType,description,created_at as createdAt from club_wallet_record where user_id=? order by id desc limit 100", userId));
+        return result;
+    }
+
+    /** Keyset pagination: newly appended rows cannot shift already fetched history. */
+    public Map<String, Object> walletRecords(Long userId, String beforeId, int limit)
+    {
+        if (userId == null || userId <= 0) throw new ServiceException("请先登录");
+        if (limit < 1 || limit > 100) throw new ServiceException("每页明细数量须为1至100");
+        Long cursor = null;
+        if (beforeId != null && !beforeId.isEmpty())
+        {
+            if (!beforeId.matches("[1-9][0-9]{0,18}")) throw new ServiceException("明细分页参数无效");
+            try { cursor = Long.valueOf(beforeId); }
+            catch (NumberFormatException invalid) { throw new ServiceException("明细分页参数无效"); }
+        }
+        List<Object> args = new ArrayList<>();
+        args.add(userId);
+        String sql = "select id,record_type as type,amount,balance_before as balanceBefore,balance_after as balanceAfter," +
+                "frozen_after as frozenAfter,reference_no as referenceNo,order_id as orderId," +
+                "counterparty_type as counterpartyType,description,created_at as createdAt from club_wallet_record where user_id=?";
+        if (cursor != null) { sql += " and id<?"; args.add(cursor); }
+        args.add(limit + 1);
+        List<Map<String, Object>> rows = jdbc.queryForList(sql + " order by id desc limit ?", args.toArray());
+        boolean hasMore = rows.size() > limit;
+        List<Map<String, Object>> items = new ArrayList<>(rows.subList(0, Math.min(rows.size(), limit)));
+        // BIGINT identifiers must remain lossless in JavaScript, including the next cursor.
+        for (Map<String, Object> item : items) item.put("id", String.valueOf(item.get("id")));
+        Map<String, Object> result = new HashMap<>();
+        result.put("userId", String.valueOf(userId));
+        result.put("items", items);
+        result.put("hasMore", hasMore);
+        result.put("nextBeforeId", hasMore ? items.get(items.size() - 1).get("id") : null);
         return result;
     }
 
@@ -1365,7 +1431,9 @@ public class ClubAppService
         return result;
     }
 
-    @Transactional
+    // The wallet lock serializes requests. After waiting for that lock, duplicate
+    // recovery must see the just-committed request instead of an earlier RR snapshot.
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Map<String, Object> withdraw(Long userId, Map<String, Object> input)
     {
         teenPolicy.assertCanWithdraw(userId);
@@ -1377,6 +1445,17 @@ public class ClubAppService
             throw new ServiceException("您存在未结清的退款追偿，结清前不能提现");
         }
         BigDecimal amount = decimal(input.get("amount"));
+        // Bound before rescaling, including exponent notation supplied outside the UI.
+        if (amount.compareTo(new BigDecimal("0.01")) < 0 || amount.compareTo(new BigDecimal("9999999999.99")) > 0)
+            throw new ServiceException("提现金额须在0.01至9999999999.99元之间");
+        try
+        {
+            amount = amount.setScale(2, RoundingMode.UNNECESSARY);
+        }
+        catch (ArithmeticException invalidPrecision)
+        {
+            throw new ServiceException("提现金额最多保留两位小数");
+        }
         String idempotencyKey = required(input, "idempotencyKey", "缺少幂等键");
         if (idempotencyKey.length() > 96) throw new ServiceException("幂等键过长");
         if (amount.compareTo(BigDecimal.ZERO) <= 0)
@@ -1402,6 +1481,8 @@ public class ClubAppService
         }
         catch (DataIntegrityViolationException duplicate)
         {
+            if (jdbc.queryForList("select id from club_withdrawal where user_id=? and idempotency_key=?", userId, idempotencyKey).isEmpty())
+                throw duplicate;
             Map<String, Object> result = wallet(userId);
             result.put("idempotent", true);
             return result;
@@ -1418,6 +1499,20 @@ public class ClubAppService
                 userId, "withdraw_frozen", amount.negate(), balanceBefore, balance, frozen, no, "withdrawal", "提现申请冻结");
         Map<String, Object> result = wallet(userId);
         result.put("idempotent", false);
+        return result;
+    }
+
+    /** Read-only recovery of the authenticated user's original withdrawal intent. */
+    public Map<String, Object> withdrawalByRequest(Long userId, String requestKey)
+    {
+        String key = requestKey == null ? "" : requestKey.trim();
+        if (key.isEmpty() || key.length() > 96) throw new ServiceException("提现请求编号无效");
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "select id,withdrawal_no as withdrawalNo,amount,status,review_note as reviewNote,created_at as createdAt " +
+                "from club_withdrawal where user_id=? and idempotency_key=?", userId, key);
+        Map<String, Object> result = new HashMap<>();
+        result.put("found", !rows.isEmpty());
+        result.put("withdrawal", rows.isEmpty() ? null : rows.get(0));
         return result;
     }
 

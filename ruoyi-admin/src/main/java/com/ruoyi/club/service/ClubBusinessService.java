@@ -440,13 +440,19 @@ public class ClubBusinessService
 
     public List<Long> readyProtectedSettlements()
     {
-        return jdbc.query("select id from club_order_settlement where status='protected' and available_at<=now() order by id limit 100",
+        return jdbc.query("select s.id from club_order_settlement s join club_order o on o.id=s.order_id " +
+                        "where s.status='protected' and s.available_at<=now() and o.status='completed' order by s.id limit 100",
                 (rs, n) -> rs.getLong(1));
     }
 
     @Transactional
     public void releaseProtectedSettlement(Long settlementId)
     {
+        // Use the same order -> settlement -> wallet lock order as refund reversal.
+        // An open dispute continues to protect this income after the normal deadline.
+        List<Map<String, Object>> orders = jdbc.queryForList(
+                "select status from club_order where id=(select order_id from club_order_settlement where id=?) for update", settlementId);
+        if (orders.isEmpty() || !"completed".equals(text(orders.get(0).get("status")))) return;
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "select * from club_order_settlement where id=? and status='protected' and available_at<=now() for update", settlementId);
         if (rows.isEmpty()) return;
@@ -493,7 +499,9 @@ public class ClubBusinessService
             BigDecimal outstanding = money(debt.get("amount")).subtract(money(debt.get("recovered_amount")));
             BigDecimal recovered = outstanding.min(remaining);
             if (recovered.compareTo(BigDecimal.ZERO) <= 0) continue;
-            int changed = jdbc.update("update club_provider_receivable set recovered_amount=recovered_amount+?,status=case when recovered_amount+?>=amount then 'recovered' else 'outstanding' end,updated_at=now() where id=? and status='outstanding' and recovered_amount+?<=amount",
+            // MySQL evaluates single-table assignments left to right; decide the state
+            // from the old amount before incrementing it, so this recovery is counted once.
+            int changed = jdbc.update("update club_provider_receivable set status=case when recovered_amount+?>=amount then 'recovered' else 'outstanding' end,recovered_amount=recovered_amount+?,updated_at=now() where id=? and status='outstanding' and recovered_amount+?<=amount",
                     recovered, recovered, debt.get("id"), recovered);
             if (changed != 1) throw new ServiceException("追偿余额发生变化，请稍后重试");
             String recoveryNo = "RC" + System.currentTimeMillis() + randomDigits();
@@ -636,6 +644,29 @@ public class ClubBusinessService
     }
 
     /** Called only after ClubAppleRefundService verifies a completed external refund. */
+    @Transactional
+    public void executeUnbookedAppleRefund(Long orderId, Long paymentId, BigDecimal amount, String transactionId, String note)
+    {
+        Map<String,Object> order=jdbc.queryForMap("select * from club_order where id=? for update",orderId);
+        Map<String,Object> payment=jdbc.queryForMap("select * from club_payment where id=? and order_id=? for update",paymentId,orderId);
+        if(!"unpaid".equals(order.get("status")) || !"created".equals(payment.get("status"))
+                || !"wechat".equals(payment.get("mode")) || !"success".equals(payment.get("refund_status"))
+                || !ClubVirtualPayGateway.owns(text(payment.get("payment_no")))
+                || !Long.valueOf(1L).equals(longValue(payment.get("stock_reserved")))
+                || money(payment.get("amount")).compareTo(amount)!=0
+                || money(order.get("total_amount")).compareTo(amount)!=0
+                || !jdbc.queryForList("select id from club_order_settlement where order_id=?",orderId).isEmpty())
+            throw new ServiceException("苹果退款对应未入账订单状态异常，请人工核对");
+        if(jdbc.update("update club_payment set status='refunded',mock_transaction_no=?,refunded_amount=?,refunded_at=now(),stock_reserved=0 where id=? and status='created' and stock_reserved=1",
+                transactionId,amount,paymentId)!=1)throw new ServiceException("苹果退款支付记录状态发生变化");
+        releaseReservedCoupon(orderId);
+        jdbc.update("update club_product_sku set stock=stock+? where id=?",order.get("quantity"),order.get("sku_id"));
+        catalog.syncProductSummary(longValue(order.get("product_id")));
+        jdbc.update("update club_order set status='refunded',refunded_at=now(),version=version+1 where id=? and status='unpaid'",orderId);
+        logOrder(orderId,"unpaid","refunded","apple",null,note+"；付款尚未本地入账，已释放预占库存和优惠券，未产生服务收益");
+        notifyUser(order.get("user_id"),"苹果支付退款完成","Apple已确认全额退款；订单预占库存及优惠券已释放，到账情况请以Apple账单为准。",orderId);
+    }
+
     @Transactional
     public void executeExternalAppleRefund(Long orderId, Long aftersaleId, BigDecimal refundAmount, String note)
     {

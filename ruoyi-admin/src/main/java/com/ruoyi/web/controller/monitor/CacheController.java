@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import com.ruoyi.common.constant.CacheConstants;
 import com.ruoyi.common.core.domain.AjaxResult;
+import com.ruoyi.common.exception.ServiceException;
 import com.ruoyi.common.utils.StringUtils;
 import com.ruoyi.system.domain.SysCache;
 
@@ -35,14 +36,9 @@ public class CacheController
     private RedisTemplate<String, String> redisTemplate;
 
     private final static List<SysCache> caches = new ArrayList<SysCache>();
-    {
-        caches.add(new SysCache(CacheConstants.LOGIN_TOKEN_KEY, "用户信息"));
+    static {
         caches.add(new SysCache(CacheConstants.SYS_CONFIG_KEY, "配置信息"));
         caches.add(new SysCache(CacheConstants.SYS_DICT_KEY, "数据字典"));
-        caches.add(new SysCache(CacheConstants.CAPTCHA_CODE_KEY, "验证码"));
-        caches.add(new SysCache(CacheConstants.REPEAT_SUBMIT_KEY, "防重提交"));
-        caches.add(new SysCache(CacheConstants.RATE_LIMIT_KEY, "限流处理"));
-        caches.add(new SysCache(CacheConstants.PWD_ERR_CNT_KEY, "密码错误次数"));
     }
 
     @PreAuthorize("@ss.hasPermi('monitor:cache:list')")
@@ -80,42 +76,66 @@ public class CacheController
     @GetMapping("/getKeys/{cacheName}")
     public AjaxResult getCacheKeys(@PathVariable String cacheName)
     {
+        requireCacheName(cacheName);
         Set<String> cacheKeys = redisTemplate.keys(cacheName + "*");
-        return AjaxResult.success(new TreeSet<>(cacheKeys));
+        return AjaxResult.success(cacheKeys == null ? new TreeSet<>() : new TreeSet<>(cacheKeys));
     }
 
     @PreAuthorize("@ss.hasPermi('monitor:cache:list')")
     @GetMapping("/getValue/{cacheName}/{cacheKey}")
     public AjaxResult getCacheValue(@PathVariable String cacheName, @PathVariable String cacheKey)
     {
+        requireCacheName(cacheName);
+        requireCacheKey(cacheKey);
+        if (!cacheKey.startsWith(cacheName)) throw new ServiceException("缓存键与缓存名称不匹配");
         String cacheValue = redisTemplate.opsForValue().get(cacheKey);
         SysCache sysCache = new SysCache(cacheName, cacheKey, cacheValue);
         return AjaxResult.success(sysCache);
     }
 
-    @PreAuthorize("@ss.hasPermi('monitor:cache:list')")
+    @PreAuthorize("@ss.hasPermi('monitor:cache:remove')")
     @DeleteMapping("/clearCacheName/{cacheName}")
     public AjaxResult clearCacheName(@PathVariable String cacheName)
     {
-        Collection<String> cacheKeys = redisTemplate.keys(cacheName + "*");
-        redisTemplate.delete(cacheKeys);
+        requireCacheName(cacheName);
+        clearNamedCache(cacheName);
         return AjaxResult.success();
     }
 
-    @PreAuthorize("@ss.hasPermi('monitor:cache:list')")
+    @PreAuthorize("@ss.hasPermi('monitor:cache:remove')")
     @DeleteMapping("/clearCacheKey/{cacheKey}")
     public AjaxResult clearCacheKey(@PathVariable String cacheKey)
     {
+        requireCacheKey(cacheKey);
         redisTemplate.delete(cacheKey);
         return AjaxResult.success();
     }
 
-    @PreAuthorize("@ss.hasPermi('monitor:cache:list')")
+    @PreAuthorize("@ss.hasPermi('monitor:cache:remove')")
     @DeleteMapping("/clearCacheAll")
     public AjaxResult clearCacheAll()
     {
-        Collection<String> cacheKeys = redisTemplate.keys("*");
-        redisTemplate.delete(cacheKeys);
+        clearNamedCache(CacheConstants.SYS_CONFIG_KEY);
+        clearNamedCache(CacheConstants.SYS_DICT_KEY);
         return AjaxResult.success();
+    }
+
+    private static void requireCacheName(String cacheName)
+    {
+        if (!CacheConstants.SYS_CONFIG_KEY.equals(cacheName) && !CacheConstants.SYS_DICT_KEY.equals(cacheName))
+            throw new ServiceException("仅允许管理系统配置和数据字典缓存");
+    }
+
+    private static void requireCacheKey(String cacheKey)
+    {
+        if (cacheKey == null || !(cacheKey.startsWith(CacheConstants.SYS_CONFIG_KEY)
+                || cacheKey.startsWith(CacheConstants.SYS_DICT_KEY)))
+            throw new ServiceException("仅允许管理系统配置和数据字典缓存");
+    }
+
+    private void clearNamedCache(String cacheName)
+    {
+        Collection<String> cacheKeys = redisTemplate.keys(cacheName + "*");
+        if (cacheKeys != null && !cacheKeys.isEmpty()) redisTemplate.delete(cacheKeys);
     }
 }

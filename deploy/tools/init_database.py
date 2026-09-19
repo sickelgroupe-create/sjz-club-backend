@@ -38,10 +38,12 @@ def main():
     for name in ("001-schema.sql", "002-seed.sql"):
         run((directory / name).read_text(encoding="utf-8"))
         print("Imported " + name)
-    tables = run("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE();")
-    if tables != "74":
-        raise SystemExit("Unexpected table count: " + tables)
-    print("Verified 74 tables. Admin is disabled; initialize your private admin password next.")
+    expected = set(re.findall(r"CREATE TABLE(?: IF NOT EXISTS)?\s+`([^`]+)`",
+                             (directory / "001-schema.sql").read_text(encoding="utf-8"), re.I))
+    actual = set(run("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE();").splitlines())
+    if not expected or actual != expected:
+        raise SystemExit("Imported table names do not match the checked-in baseline. Inspect this new database before continuing.")
+    print("Verified " + str(len(actual)) + " baseline tables. Admin is disabled; initialize your private admin password next.")
 
 if __name__ == "__main__":
     main()

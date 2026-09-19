@@ -39,6 +39,8 @@ class ClubProductionAuthTest {
         });
         Map<String,Object> registered=service.phoneRegister(new HashMap<String,Object>(){{put("phone","13800000000");put("password","Password123");put("phoneCode","verified-code");}});
         assertNotNull(registered.get("accessToken"));assertTrue(encoder.matches("Password123",String.valueOf(user.get("password_hash"))));
+        assertEquals(false,registered.get("wechatBindingRequired"));
+        verify(jdbc).update(contains("insert into club_user_token"),eq(39L),eq("access"),anyString(),any(Timestamp.class));
         when(jdbc.queryForList(startsWith("select * from club_user where account=? or phone=?"),eq("13800000000"),eq("13800000000"),eq("13800000000"))).thenReturn(Collections.singletonList(user));
         assertNotNull(service.login(new HashMap<String,Object>(){{put("account","13800000000");put("password","Password123");}}).get("accessToken"));
         verify(jdbc,never()).queryForList(contains("club_phone_code"),any(Object[].class));

@@ -89,10 +89,11 @@ public class ClubVirtualPayGateway
 
     public Refund refund(String no,String businessRefundNo,BigDecimal money)
     {
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new ServiceException("虚拟退款提交必须在审核事务提交之后执行");
         Map<String,Object> saved=record(no);
-        String refundNo="VR"+businessRefundNo.replaceAll("[^A-Za-z0-9]","");
-        while(refundNo.length()<8)refundNo="VR0"+refundNo;
-        if(refundNo.length()>32)throw new ServiceException("退款单号过长");
+        String refundNo=refundNumber(businessRefundNo);
+        if(!refundNo.equals(saved.get("refund_no")))throw new ServiceException("必须先保存虚拟退款意图");
         JSONObject response=client.startRefund(saved.get("openid").toString(),no,refundNo,ClubWechatPayService.cents(money),Integer.parseInt(saved.get("environment").toString()));
         if(!refundNo.equals(response.getString("refund_order_id")) || !no.equals(response.getString("pay_order_id")))
             throw new ServiceException("退款受理信息不匹配，请查询后再处理");
@@ -100,6 +101,45 @@ public class ClubVirtualPayGateway
         Refund refund=new Refund();refund.setOutRefundNo(businessRefundNo);refund.setOutTradeNo(no);
         refund.setRefundId(response.getString("refund_wx_order_id"));refund.setStatus(Status.PROCESSING);
         return refund;
+    }
+
+    static String refundNumber(String businessRefundNo)
+    {
+        String no="VR"+businessRefundNo.replaceAll("[^A-Za-z0-9]","");
+        while(no.length()<8)no="VR0"+no;
+        if(no.length()>32)throw new ServiceException("退款单号过长");
+        return no;
+    }
+
+    /** Only a committed, approved intent can initiate a remote refund. A timeout
+     * leaves that intent pending; a later run queries the same refund identity. */
+    public RefundNotification submitPendingRefund(String no, String businessRefundNo)
+    {
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new ServiceException("虚拟退款提交必须在审核事务提交之后执行");
+        List<Map<String,Object>> intents=jdbc.queryForList(
+                "select p.amount from club_payment p join club_aftersale a on a.order_id=p.order_id and a.refund_idempotency_key=p.refund_no " +
+                "where p.payment_no=? and p.refund_no=? and p.mode='wechat' and p.status='success' and p.refund_status='pending' and a.status='approved'", no,businessRefundNo);
+        if(intents.size()!=1)return null;
+        Map<String,Object> saved=record(no);
+        if(!Integer.valueOf(0).equals(((Number)saved.get("environment")).intValue())
+                || !refundNumber(businessRefundNo).equals(saved.get("refund_no")))
+            throw new ServiceException("已保存的退款意图与支付记录不一致");
+        int expected=ClubWechatPayService.cents(new BigDecimal(intents.get(0).get("amount").toString()));
+        if(expected!=((Number)saved.get("expected_fen")).intValue())throw new ServiceException("退款意图金额不一致");
+        JSONObject original=remote(no);
+        validatePaid(original,expected);
+        if(!Integer.valueOf(0).equals(original.getInteger("order_type")))throw new ServiceException("该渠道不可由平台提交退款");
+        Integer remaining=original.getInteger("left_fee");
+        if(Integer.valueOf(0).equals(remaining))return confirmedRefund(no,businessRefundNo);
+        if(!Integer.valueOf(expected).equals(remaining))throw new ServiceException("退款余额异常，请人工核对");
+        Refund accepted=refund(no,businessRefundNo,BigDecimal.valueOf(expected,2));
+        // Acceptance is never a completed refund. A concurrent callback may have
+        // already completed it, so do not overwrite that terminal state.
+        jdbc.update("update club_payment set refund_status='processing',wechat_refund_id=coalesce(wechat_refund_id,?) " +
+                "where payment_no=? and refund_no=? and status='success' and refund_status='pending'",
+                accepted.getRefundId(),no,businessRefundNo);
+        return null;
     }
 
     public void confirmDelivery(String no)

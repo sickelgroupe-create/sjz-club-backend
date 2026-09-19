@@ -264,7 +264,7 @@ public class ClubAdminService
         Long id = optionalLong(input.get("id"));
         String idempotencyKey = null;
         String payloadHash = null;
-        if (id == null)
+        if (id == null || "receivables".equals(type))
         {
             idempotencyKey = text(first(input, "idempotencyKey", "idempotency_key", "requestId")).trim();
             if (idempotencyKey.isEmpty()) throw new ServiceException("新增或配置写入请求缺少幂等编号");
@@ -901,6 +901,8 @@ public class ClubAdminService
     {
         String reason = required(input, "reason");
         BigDecimal requested = money(first(input, "amount"));
+        try { requested = requested.setScale(2, java.math.RoundingMode.UNNECESSARY); }
+        catch (ArithmeticException invalidPrecision) { throw new ServiceException("核销金额最多支持两位小数"); }
         if (requested.compareTo(BigDecimal.ZERO) <= 0) throw new ServiceException("核销金额必须大于0");
         List<Map<String, Object>> rows = jdbc.queryForList("select * from club_provider_receivable where id=? for update", id);
         if (rows.isEmpty()) throw new ServiceException("追偿应收不存在");
@@ -909,7 +911,8 @@ public class ClubAdminService
         if (!"outstanding".equals(text(debt.get("status"))) || outstanding.compareTo(BigDecimal.ZERO) <= 0)
             throw new ServiceException("该追偿应收已经结清");
         if (requested.compareTo(outstanding) > 0) throw new ServiceException("核销金额不能超过剩余追偿金额");
-        jdbc.update("update club_provider_receivable set recovered_amount=recovered_amount+?,status=case when recovered_amount+?=amount then 'recovered' else 'outstanding' end,updated_at=now() where id=?",
+        // Evaluate against the old amount before MySQL applies the increment.
+        jdbc.update("update club_provider_receivable set status=case when recovered_amount+?=amount then 'recovered' else 'outstanding' end,recovered_amount=recovered_amount+?,updated_at=now() where id=?",
                 requested, requested, id);
         String recoveryNo = "RW" + UUID.randomUUID().toString().replace("-", "");
         jdbc.update("insert into club_provider_receivable_recovery(recovery_no,receivable_id,provider_user_id,order_id,aftersale_id,amount,recovery_type,operator_id,reason) values(?,?,?,?,?,?,'manual_writeoff',?,?)",
@@ -1254,7 +1257,12 @@ public class ClubAdminService
             if(uid!=null)clauses.add("id=?");
             else {
             List<String> likes = new ArrayList<>();
-            for (String column : entity.searchColumns.split(",")) likes.add(column + " like ?");
+            for (String column : entity.searchColumns.split(","))
+            {
+                if ("club_aftersale".equals(entity.table) && "order_no".equals(column))
+                    likes.add("exists(select 1 from club_order search_order where search_order.id=club_aftersale.order_id and search_order.order_no like ?)");
+                else likes.add(column + " like ?");
+            }
             clauses.add("(" + String.join(" or ", likes) + ")");
             }
         }

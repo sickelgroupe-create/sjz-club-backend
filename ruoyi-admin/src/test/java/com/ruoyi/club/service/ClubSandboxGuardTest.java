@@ -36,6 +36,24 @@ class ClubSandboxGuardTest {
   assertThrows(IllegalStateException.class,()->guard(sandbox(),source,"standalone","simulation").afterPropertiesSet());
   verify(c).close();
  }
+ @Test void differentlyCasedSimulationCannotBypassProductionGuard() {
+  for(String payment:new String[]{"SIMULATION","Simulation","sImUlAtIoN"}) {
+   DataSource source=mock(DataSource.class);
+   assertThrows(IllegalStateException.class,()->guard(new MockEnvironment(),source,"wechat",payment).afterPropertiesSet());
+   verifyNoInteractions(source);
+  }
+ }
+ @Test void differentlyCasedStandaloneCannotBypassProductionGuard() {
+  DataSource source=mock(DataSource.class);
+  assertThrows(IllegalStateException.class,()->guard(new MockEnvironment(),source,"STANDALONE","disabled").afterPropertiesSet());
+  verifyNoInteractions(source);
+ }
+ @Test void upperCaseSimulationStillRequiresAnIsolatedDatabase() throws Exception {
+  DataSource source=mock(DataSource.class);Connection c=mock(Connection.class);
+  when(source.getConnection()).thenReturn(c);when(c.getCatalog()).thenReturn("production_db");
+  assertThrows(IllegalStateException.class,()->guard(sandbox(),source,"standalone","SIMULATION").afterPropertiesSet());
+  verify(c).close();
+ }
  @Test void sandboxRejectsWechatCredentialsBeforeDatabaseAccess() {
   for(String key:new String[]{"club.wechat-app-id","club.wechat-app-secret","club.wechat-pay-mch-id","club.wechat-pay-api-v3-key","club.wechat-pay-private-key-path"}) {
    DataSource source=mock(DataSource.class);

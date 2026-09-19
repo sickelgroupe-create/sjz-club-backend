@@ -1,6 +1,8 @@
 package com.ruoyi.club.service;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -12,7 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.alibaba.fastjson2.JSON;
 import com.ruoyi.common.exception.ServiceException;
 import com.ruoyi.club.web.ClubForbiddenException;
-import com.wechat.pay.java.service.refund.model.Refund;
+import com.ruoyi.club.web.ClubConflictException;
 import com.wechat.pay.java.service.refund.model.RefundNotification;
 import com.wechat.pay.java.service.refund.model.Status;
 
@@ -173,26 +175,39 @@ public class ClubAfterSaleService
     public Map<String, Object> adminReview(Long adminId, Long id, Map<String, Object> input)
     {
         String action = required(input, "action", "请选择审核结果");
-        if (!Arrays.asList("approve", "reject").contains(action)) throw new ServiceException("审核结果不正确");
+        if (!Arrays.asList("approve", "reject", "reopen").contains(action)) throw new ServiceException("审核结果不正确");
         String requestId = requiredEither(input, "requestId", "request_id", "缺少审核幂等编号");
         if (requestId.length() > 96) throw new ServiceException("审核幂等编号过长");
+        String note = limited(required(input, "note", "请填写审核或重开说明"), 1000);
+        // The order lock serializes reopening with fulfillment, settlement release,
+        // refunds and other reviews. Never acquire the case before this order.
+        List<Map<String, Object>> orders = jdbc.queryForList(
+                "select * from club_order where id=(select order_id from club_aftersale where id=?) for update", id);
+        if (orders.size() != 1) throw new ServiceException("售后对应订单不存在");
+        Map<String, Object> order = orders.get(0);
         List<Map<String, Object>> rows = jdbc.queryForList("select * from club_aftersale where id=? for update", id);
         if (rows.isEmpty()) throw new ServiceException("售后申请不存在");
         Map<String, Object> current = rows.get(0);
+        if (!order.get("id").equals(current.get("order_id"))) throw new ServiceException("售后对应订单不一致");
+        BigDecimal orderAmount = decimal(order.get("total_amount"), null);
+        BigDecimal requestedAmount = decimal(first(input, "refundAmount", "refund_amount"), orderAmount);
+        if (orderAmount.compareTo(BigDecimal.ZERO) <= 0 || requestedAmount.compareTo(orderAmount) != 0)
+            throw new ServiceException("当前仅支持全额退款，退款金额必须等于订单实付金额");
+        if ("reopen".equals(action) && requestId.equals(text(current.get("request_id"))))
+            throw new ClubConflictException("重开售后必须使用新的幂等编号，不能复用原申请编号");
+        preservePreviousReview(current, orderAmount);
+        if (beginAdminRequest(adminId, id, action, requestId, note, requestedAmount, current)) return adminDetail(id, true);
+        if ("reopen".equals(action))
+        {
+            reopenLocked(adminId, id, order, current, note);
+            return finishAdminRequest(requestId, id);
+        }
         String from = text(current.get("status"));
-        if (requestId.equals(text(current.get("review_request_id")))
-                || ("approve".equals(action) && "refunded".equals(from))
-                || ("reject".equals(action) && "rejected".equals(from))) return adminDetail(id);
+        if (("approve".equals(action) && "refunded".equals(from))
+                || ("reject".equals(action) && "rejected".equals(from))) return finishAdminRequest(requestId, id);
         if (!Arrays.asList("provider_approved", "provider_rejected", "platform_reviewing").contains(from))
             throw new ServiceException("当前售后状态不能审核");
-        String note = required(input, "note", "请填写审核说明");
-        BigDecimal orderAmount = jdbc.queryForObject("select total_amount from club_order where id=?", BigDecimal.class, current.get("order_id"));
         BigDecimal refundAmount = orderAmount;
-        BigDecimal requestedAmount = decimal(first(input, "refundAmount", "refund_amount"), orderAmount);
-        if (orderAmount == null || orderAmount.compareTo(BigDecimal.ZERO) <= 0)
-            throw new ServiceException("订单实付金额不正确，不能退款");
-        if (requestedAmount.compareTo(orderAmount) != 0)
-            throw new ServiceException("当前仅支持全额退款，退款金额必须等于订单实付金额");
         if ("reject".equals(action))
         {
             jdbc.update("update club_aftersale set status='rejected',review_note=?,reviewed_by=?,reviewed_at=now(),review_request_id=? where id=?", note, adminId, requestId, id);
@@ -216,26 +231,24 @@ public class ClubAfterSaleService
                     jdbc.update("update club_payment set refund_no=?,refund_status='apple_pending' where id=? and status='success'",refundNo,payment.get("id"));
                     log(id,"approved","approved","system",null,"平台同意售后；苹果支付需用户向Apple申请退款，等待退款结果，尚未退款");
                     notify(current.get("user_id"),"苹果支付售后已审核","请向Apple申请退款，最终结果由Apple处理；平台审核通过不代表资金已退回。",id);
-                    return adminDetail(id);
+                    return finishAdminRequest(requestId, id);
                 }
-                Refund refund = wechatPay.refund(text(payment.get("payment_no")), refundNo, refundAmount, note);
-                if (refund.getStatus() == null) throw new ServiceException("微信退款状态缺失");
-                jdbc.update("update club_payment set refund_no=?,wechat_refund_id=?,refund_status=? where id=? and status='success'",
-                        refundNo, refund.getRefundId(), refund.getStatus().name().toLowerCase(), payment.get("id"));
+                if (ClubVirtualPayGateway.owns(text(payment.get("payment_no"))))
+                {
+                    // Commit the refund identity with approval. The worker performs the
+                    // remote mutation only after this transaction is visible to it.
+                    String remoteRefundNo = ClubVirtualPayGateway.refundNumber(refundNo);
+                    if (jdbc.update("update club_virtual_payment set refund_no=? where payment_no=? and (refund_no is null or refund_no=?)",
+                            remoteRefundNo, payment.get("payment_no"), remoteRefundNo) != 1)
+                        throw new ServiceException("虚拟退款意图冲突，请人工核对");
+                }
+                jdbc.update("update club_payment set refund_no=?,refund_status='pending' where id=? and status='success'", refundNo, payment.get("id"));
                 jdbc.update("insert into club_payment_audit(payment_id,order_id,user_id,action,result_status,request_id,detail) " +
-                                "select id,order_id,user_id,'wechat_refund',?,?,'微信支付原路全额退款' from club_payment where id=?",
-                        refund.getStatus().name().toLowerCase(), refundNo, payment.get("id"));
-                if (Status.SUCCESS.equals(refund.getStatus()))
-                {
-                    business.executeApprovedRefund(number(current.get("order_id")), adminId, id, refundAmount, "微信退款已确认成功：" + note);
-                    jdbc.update("update club_aftersale set status='refunded',refunded_at=now() where id=? and status='approved'", id);
-                    log(id, "approved", "refunded", "system", null, "微信原路退款及本地资金冲正完成");
-                }
-                else if (Status.PROCESSING.equals(refund.getStatus()))
-                {
-                    log(id, "approved", "approved", "wechat", null, "微信原路退款处理中");
-                }
-                else throw new ServiceException("微信退款未受理，请核对商户平台退款状态");
+                                "select id,order_id,user_id,'wechat_refund_intent','pending',?,'全额退款已审核，等待服务端提交和查单确认' from club_payment where id=?",
+                        refundNo, payment.get("id"));
+                log(id, "approved", "approved", "system", null, "退款意图已保存，等待服务端提交，尚未确认退款成功");
+                notify(current.get("user_id"), "售后审核完成", "平台已同意退款，退款结果确认后将更新订单。", id);
+                return finishAdminRequest(requestId, id);
             }
             else
             {
@@ -245,7 +258,105 @@ public class ClubAfterSaleService
             }
         }
         notify(current.get("user_id"), "售后审核完成", "您的售后申请已经完成平台审核，请查看详情。", id);
-        return adminDetail(id);
+        return finishAdminRequest(requestId, id);
+    }
+
+    private void reopenLocked(Long adminId, Long id, Map<String,Object> order, Map<String,Object> current, String note)
+    {
+        if (!"rejected".equals(current.get("status"))) throw new ServiceException("只有平台已驳回的售后可以重开");
+        if (!Arrays.asList("pending", "accepted", "serving", "completed").contains(order.get("status")))
+            throw new ServiceException("当前订单状态不能重开售后");
+        if (!text(current.get("refund_idempotency_key")).isEmpty() || current.get("refunded_at") != null
+                || !order.get("user_id").equals(current.get("user_id")))
+            throw new ServiceException("售后存在退款记录或归属异常，不能重开");
+        List<Map<String,Object>> payments = jdbc.queryForList("select * from club_payment where order_id=? for update", order.get("id"));
+        Map<String,Object> paid = null;
+        for (Map<String,Object> payment : payments)
+        {
+            if ("refunded".equals(payment.get("status")) || "created".equals(payment.get("status"))
+                    || !text(payment.get("refund_no")).isEmpty() || !text(payment.get("refund_status")).isEmpty()
+                    || !text(payment.get("wechat_refund_id")).isEmpty()
+                    || payment.get("refunded_at") != null
+                    || decimal(payment.get("refunded_amount"), BigDecimal.ZERO).signum() != 0)
+                throw new ServiceException("订单存在支付或退款处理中记录，不能重开售后");
+            if ("success".equals(payment.get("status")))
+            {
+                if (paid != null) throw new ServiceException("订单没有唯一的成功支付记录");
+                paid = payment;
+            }
+        }
+        if (paid == null || !order.get("user_id").equals(paid.get("user_id"))
+                || !Arrays.asList("wechat", "balance", "mock_wechat").contains(paid.get("mode"))
+                || decimal(paid.get("amount"), null).compareTo(decimal(order.get("total_amount"), null)) != 0)
+            throw new ServiceException("订单原支付记录或金额异常，不能重开售后");
+        if (!jdbc.queryForList("select v.payment_no from club_virtual_payment v join club_payment p on p.payment_no=v.payment_no where p.order_id=? and v.refund_no is not null for update", order.get("id")).isEmpty())
+            throw new ServiceException("订单已有虚拟退款意图，不能重开售后");
+        if (jdbc.update("update club_aftersale set status='platform_reviewing',review_note='',reviewed_by=null,reviewed_at=null,review_request_id=null where id=? and status='rejected'", id) != 1)
+            throw new ClubConflictException("售后状态发生变化，请刷新后重试");
+        if (jdbc.update("update club_order set status='refunding',version=version+1 where id=? and status=?", order.get("id"), order.get("status")) != 1)
+            throw new ClubConflictException("订单状态发生变化，请刷新后重试");
+        log(id, "rejected", "platform_reviewing", "admin", adminId, note);
+        jdbc.update("insert into club_order_log(order_id,from_status,to_status,operator_type,operator_id,note) values(?,?,'refunding','admin',?,?)",
+                order.get("id"), order.get("status"), adminId, "管理员重新打开售后，等待平台审核；尚未退款");
+        notify(order.get("user_id"), "售后已重新进入平台审核", "管理员已重新打开原售后申请，尚未批准或完成退款，请查看售后处理记录。", id);
+        notify(order.get("provider_user_id"), "售后重新审核，暂停服务", "订单已重新进入平台售后审核，请暂停服务并查看处理记录。", id);
+    }
+
+    /** Archive the pre-upgrade scalar key before a later review can replace it. */
+    private void preservePreviousReview(Map<String,Object> current, BigDecimal amount)
+    {
+        String previous = text(current.get("review_request_id"));
+        if (previous.isEmpty()) return;
+        String status = text(current.get("status"));
+        if (!Arrays.asList("rejected", "approved", "refunded").contains(status))
+            throw new ServiceException("历史审核状态异常，请人工核对");
+        String decision = status;
+        if ("refunded".equals(status))
+        {
+            // Apple can override a rejected case without changing its reviewer.
+            // The final refund state is not evidence that this reviewer approved it.
+            List<String> decisions = jdbc.query("select to_status from club_aftersale_log where aftersale_id=? and operator_type='admin' and to_status in ('approved','rejected') order by id desc limit 1 for update",
+                    (rs, row) -> rs.getString(1), current.get("id"));
+            if (decisions.size() != 1) throw new ServiceException("历史审核日志缺失，请人工核对");
+            decision = decisions.get(0);
+        }
+        String action = "rejected".equals(decision) ? "reject" : "approve";
+        String snapshot = JSON.toJSONString(current);
+        jdbc.update("insert into club_aftersale_admin_request(request_id,aftersale_id,admin_user_id,action,payload_hash,before_json,result_json,completed_at) values(?,?,?,?,?,?,?,now()) on duplicate key update request_id=request_id",
+                previous, current.get("id"), current.get("reviewed_by"), action,
+                adminRequestHash(number(current.get("id")), action, text(current.get("review_note")), amount), snapshot, snapshot);
+    }
+
+    private boolean beginAdminRequest(Long adminId, Long id, String action, String key, String note, BigDecimal amount, Map<String,Object> before)
+    {
+        String hash = adminRequestHash(id, action, note, amount);
+        jdbc.update("insert into club_aftersale_admin_request(request_id,aftersale_id,admin_user_id,action,payload_hash,before_json) values(?,?,?,?,?,?) on duplicate key update request_id=request_id",
+                key, id, adminId, action, hash, JSON.toJSONString(before));
+        Map<String,Object> saved = jdbc.queryForMap("select * from club_aftersale_admin_request where request_id=? for update", key);
+        if (!id.equals(number(saved.get("aftersale_id"))) || !adminId.equals(number(saved.get("admin_user_id")))
+                || !action.equals(saved.get("action")) || !hash.equals(saved.get("payload_hash")))
+            throw new ClubConflictException("同一幂等编号不能用于不同售后、操作、管理员或内容");
+        return saved.get("result_json") != null;
+    }
+
+    private Map<String,Object> finishAdminRequest(String key, Long id)
+    {
+        Map<String,Object> result = adminDetail(id, true);
+        jdbc.update("update club_aftersale_admin_request set result_json=?,completed_at=now() where request_id=? and result_json is null", JSON.toJSONString(result), key);
+        return result;
+    }
+
+    private static String adminRequestHash(Long id, String action, String note, BigDecimal amount)
+    {
+        String canonical = JSON.toJSONString(Arrays.asList(id, action, note, amount.stripTrailingZeros().toPlainString()));
+        try
+        {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hash = new StringBuilder();
+            for (byte value : digest) hash.append(String.format("%02x", value));
+            return hash.toString();
+        }
+        catch (java.security.NoSuchAlgorithmException failure) { throw new IllegalStateException(failure); }
     }
 
     @Transactional
@@ -258,7 +369,7 @@ public class ClubAfterSaleService
         if (payments.size() != 1) throw new ServiceException("微信退款记录不存在");
         Map<String, Object> payment = payments.get(0);
         String status = notification.getRefundStatus() == null ? "" : notification.getRefundStatus().name().toLowerCase();
-        jdbc.update("update club_payment set wechat_refund_id=?,refund_status=? where id=?",
+        jdbc.update("update club_payment set wechat_refund_id=?,refund_status=? where id=? and status<>'refunded'",
                 notification.getRefundId(), status, payment.get("id"));
         if (!Status.SUCCESS.equals(notification.getRefundStatus())) return;
         int expected = ClubWechatPayService.cents(decimal(payment.get("amount"), payment.get("amount")));
@@ -282,10 +393,15 @@ public class ClubAfterSaleService
 
     public Map<String, Object> adminDetail(Long id)
     {
-        Map<String, Object> result = detail(id, "1=1", null);
+        return adminDetail(id, false);
+    }
+
+    private Map<String, Object> adminDetail(Long id, boolean currentRead)
+    {
+        Map<String, Object> result = detail(id, "1=1", null, currentRead);
         result.put("refundPayments", jdbc.queryForList(
                 "select mode,status,amount,refund_no,refund_status,refunded_at from club_payment " +
-                "where order_id=? and status in ('success','refunded') order by id desc", result.get("order_id")));
+                "where order_id=? and status in ('success','refunded') order by id desc" + (currentRead ? " for update" : ""), result.get("order_id")));
         return result;
     }
 
@@ -319,13 +435,19 @@ public class ClubAfterSaleService
 
     private Map<String, Object> detail(Long id, String ownership, Object owner)
     {
+        return detail(id, ownership, owner, false);
+    }
+
+    private Map<String, Object> detail(Long id, String ownership, Object owner, boolean currentRead)
+    {
+        String lock = currentRead ? " for update" : "";
         String sql = "select a.*,o.order_no as orderNo,o.product_name as productName,o.sku_name as skuName,o.total_amount as orderAmount,o.status as orderStatus " +
-                "from club_aftersale a join club_order o on o.id=a.order_id where a.id=? and " + ownership;
+                "from club_aftersale a join club_order o on o.id=a.order_id where a.id=? and " + ownership + lock;
         List<Map<String, Object>> rows = owner == null ? jdbc.queryForList(sql, id) : jdbc.queryForList(sql, id, owner);
         if (rows.isEmpty()) throw new ClubForbiddenException("无权查看该售后申请");
         Map<String, Object> result = new HashMap<>(rows.get(0));
-        result.put("logs", jdbc.queryForList("select from_status as fromStatus,to_status as toStatus,operator_type as operatorType,note,created_at as createdAt from club_aftersale_log where aftersale_id=? order by id", id));
-        result.put("receivables", jdbc.queryForList("select receivable_no as receivableNo,amount,recovered_amount as recoveredAmount,status,created_at as createdAt from club_provider_receivable where aftersale_id=?", id));
+        result.put("logs", jdbc.queryForList("select from_status as fromStatus,to_status as toStatus,operator_type as operatorType,note,created_at as createdAt from club_aftersale_log where aftersale_id=? order by id" + lock, id));
+        result.put("receivables", jdbc.queryForList("select receivable_no as receivableNo,amount,recovered_amount as recoveredAmount,status,created_at as createdAt from club_provider_receivable where aftersale_id=?" + lock, id));
         return result;
     }
 

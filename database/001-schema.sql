@@ -133,6 +133,23 @@ CREATE TABLE `club_aftersale_log` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `club_aftersale_admin_request` (
+  `request_id` varchar(96) NOT NULL,
+  `aftersale_id` bigint NOT NULL,
+  `admin_user_id` bigint DEFAULT NULL,
+  `action` varchar(16) NOT NULL,
+  `payload_hash` char(64) NOT NULL,
+  `before_json` longtext NOT NULL,
+  `result_json` longtext,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `completed_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`request_id`),
+  KEY `idx_club_aftersale_admin_history` (`aftersale_id`,`created_at`),
+  CONSTRAINT `fk_club_aftersale_admin_case` FOREIGN KEY (`aftersale_id`) REFERENCES `club_aftersale` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='售后管理员审核重开幂等历史';
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `club_application` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `user_id` bigint NOT NULL,
@@ -401,6 +418,7 @@ CREATE TABLE `club_order` (
   `remark` varchar(500) DEFAULT '',
   `status` varchar(20) NOT NULL DEFAULT 'unpaid',
   `payment_expires_at` datetime DEFAULT NULL,
+  `expiry_checked_at` datetime(6) DEFAULT NULL,
   `payment_method` varchar(20) NOT NULL DEFAULT '',
   `cancel_reason` varchar(40) NOT NULL DEFAULT '',
   `paid_at` datetime DEFAULT NULL,
@@ -420,6 +438,7 @@ CREATE TABLE `club_order` (
   KEY `idx_club_order_user` (`user_id`,`status`,`created_at`),
   KEY `idx_club_order_status` (`status`,`created_at`),
   KEY `idx_club_order_payment_expiry` (`status`,`payment_expires_at`),
+  KEY `idx_club_order_expiry_retry` (`status`,`expiry_checked_at`,`id`),
   KEY `idx_club_order_provider` (`provider_user_id`,`status`,`created_at`),
   KEY `fk_v2_order_product` (`product_id`),
   KEY `fk_v2_order_sku` (`sku_id`),
@@ -501,6 +520,7 @@ CREATE TABLE `club_payment` (
   `prepay_id` varchar(128) DEFAULT NULL,
   `stock_reserved` tinyint NOT NULL DEFAULT '0',
   `refund_no` varchar(64) DEFAULT NULL,
+  `refund_checked_at` datetime(6) DEFAULT NULL,
   `wechat_refund_id` varchar(64) DEFAULT NULL,
   `refund_status` varchar(20) DEFAULT NULL,
   `paid_at` datetime DEFAULT NULL,
@@ -513,6 +533,7 @@ CREATE TABLE `club_payment` (
   UNIQUE KEY `uk_club_payment_transaction` (`mock_transaction_no`),
   UNIQUE KEY `uk_club_payment_refund_no` (`refund_no`),
   KEY `idx_club_payment_order` (`order_id`,`status`),
+  KEY `idx_club_payment_refund_retry` (`mode`,`status`,`refund_status`,`refund_checked_at`,`id`),
   CONSTRAINT `fk_v2_payment_order` FOREIGN KEY (`order_id`) REFERENCES `club_order` (`id`),
   CONSTRAINT `fk_v2_payment_user` FOREIGN KEY (`user_id`) REFERENCES `club_user` (`id`),
   CONSTRAINT `ck_v2_payment_refund` CHECK (((`amount` >= 0) and (`refunded_amount` >= 0) and (`refunded_amount` <= `amount`)))
@@ -1024,6 +1045,7 @@ CREATE TABLE `club_wallet_record` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_club_wallet_record_business` (`user_id`,`record_type`,`reference_no`),
   KEY `idx_club_wallet_record` (`user_id`,`created_at`),
+  KEY `idx_club_wallet_record_cursor` (`user_id`,`id`),
   KEY `fk_v2_wallet_record_order` (`order_id`),
   CONSTRAINT `fk_v2_wallet_record_order` FOREIGN KEY (`order_id`) REFERENCES `club_order` (`id`),
   CONSTRAINT `fk_v2_wallet_record_user` FOREIGN KEY (`user_id`) REFERENCES `club_user` (`id`)

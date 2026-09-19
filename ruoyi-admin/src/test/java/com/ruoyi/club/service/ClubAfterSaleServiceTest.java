@@ -50,6 +50,8 @@ class ClubAfterSaleServiceTest
         aftersale.put("order_id", 20L);
         aftersale.put("status", "platform_reviewing");
         when(jdbc.queryForList(anyString(), eq(9L))).thenReturn(Collections.singletonList(aftersale));
+        Map<String,Object> order = new HashMap<>(); order.put("id",20L); order.put("total_amount",new BigDecimal("100.00"));
+        when(jdbc.queryForList(org.mockito.ArgumentMatchers.startsWith("select * from club_order where"),eq(9L))).thenReturn(Collections.singletonList(order));
         when(jdbc.queryForObject(anyString(), eq(BigDecimal.class), eq(20L))).thenReturn(new BigDecimal("100.00"));
         Map<String, Object> request = new HashMap<>();
         request.put("action", "approve");
@@ -96,6 +98,12 @@ class ClubAfterSaleServiceTest
         payment.put("id", 22L); payment.put("payment_no", "WX-ORDER"); payment.put("mode", "wechat");
         payment.put("amount", new BigDecimal("12.34")); payment.put("status", "success");
         when(jdbc.queryForList(anyString(), eq(17L))).thenReturn(Collections.singletonList(aftersale));
+        Map<String,Object> order = new HashMap<>(); order.put("id",44L); order.put("total_amount",new BigDecimal("12.34"));
+        when(jdbc.queryForList(org.mockito.ArgumentMatchers.startsWith("select * from club_order where"),eq(17L))).thenReturn(Collections.singletonList(order));
+        Map<String,Object> savedRequest = new HashMap<>();
+        savedRequest.put("aftersale_id",17L); savedRequest.put("admin_user_id",1L); savedRequest.put("action","approve");
+        savedRequest.put("payload_hash",org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"adminRequestHash",17L,"approve","同意全额退款",new BigDecimal("12.34")));
+        when(jdbc.queryForMap(org.mockito.ArgumentMatchers.contains("club_aftersale_admin_request"),eq("review-17"))).thenReturn(savedRequest);
         when(jdbc.queryForList(anyString(), eq(44L))).thenReturn(Collections.singletonList(payment));
         when(jdbc.queryForObject(anyString(), eq(BigDecimal.class), eq(44L))).thenReturn(new BigDecimal("12.34"));
         Refund pending = new Refund(); pending.setStatus(Status.PROCESSING); pending.setRefundId("R-WX");
@@ -105,7 +113,8 @@ class ClubAfterSaleServiceTest
 
         service.adminReview(1L, 17L, request);
 
-        verify(wechatPay).refund(eq("WX-ORDER"), eq("AFR-17"), eq(new BigDecimal("12.34")), anyString());
+        verify(wechatPay, never()).refund(anyString(), anyString(), any(), anyString());
+        verify(jdbc).update(org.mockito.ArgumentMatchers.contains("refund_status='pending'"), eq("AFR-17"), eq(22L));
         verify(business, never()).executeApprovedRefund(any(), any(), any(), any(), anyString());
     }
 }

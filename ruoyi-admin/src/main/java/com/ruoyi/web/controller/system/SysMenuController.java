@@ -23,6 +23,7 @@ import com.ruoyi.system.service.ISysMenuService;
 
 /**
  * 菜单信息
+ * 系统管理写操作仅限框架超级管理员；普通角色不能委派授权或扩大自身权限。
  * 
  * @author ruoyi
  */
@@ -80,7 +81,7 @@ public class SysMenuController extends BaseController
     /**
      * 新增菜单
      */
-    @PreAuthorize("@ss.hasPermi('system:menu:add')")
+    @PreAuthorize("T(com.ruoyi.common.utils.SecurityUtils).isAdmin() and @ss.hasPermi('system:menu:add')")
     @Log(title = "菜单管理", businessType = BusinessType.INSERT)
     @PostMapping
     public AjaxResult add(@Validated @RequestBody SysMenu menu)
@@ -104,7 +105,7 @@ public class SysMenuController extends BaseController
     /**
      * 修改菜单
      */
-    @PreAuthorize("@ss.hasPermi('system:menu:edit')")
+    @PreAuthorize("T(com.ruoyi.common.utils.SecurityUtils).isAdmin() and @ss.hasPermi('system:menu:edit')")
     @Log(title = "菜单管理", businessType = BusinessType.UPDATE)
     @PutMapping
     public AjaxResult edit(@Validated @RequestBody SysMenu menu)
@@ -132,7 +133,7 @@ public class SysMenuController extends BaseController
     /**
      * 删除菜单
      */
-    @PreAuthorize("@ss.hasPermi('system:menu:remove')")
+    @PreAuthorize("T(com.ruoyi.common.utils.SecurityUtils).isAdmin() and @ss.hasPermi('system:menu:remove')")
     @Log(title = "菜单管理", businessType = BusinessType.DELETE)
     @DeleteMapping("/{menuId}")
     public AjaxResult remove(@PathVariable("menuId") Long menuId)

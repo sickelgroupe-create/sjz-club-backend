@@ -555,6 +555,13 @@ public class ClubAppController
     @GetMapping("/wallet")
     public AjaxResult wallet(HttpServletRequest request) { return AjaxResult.success(service.wallet(auth.requireUserId(request))); }
 
+    @GetMapping("/wallet/records")
+    public AjaxResult walletRecords(HttpServletRequest request,
+            @RequestParam(required = false) String beforeId, @RequestParam(defaultValue = "30") int limit)
+    {
+        return AjaxResult.success(service.walletRecords(auth.requireUserId(request), beforeId, limit));
+    }
+
     @GetMapping("/teen-mode")
     public AjaxResult teenMode(HttpServletRequest request) { return AjaxResult.success(service.teenMode(auth.requireUserId(request))); }
 
@@ -625,6 +632,12 @@ public class ClubAppController
     public AjaxResult withdrawals(HttpServletRequest request)
     {
         return AjaxResult.success(service.withdrawals(auth.requireUserId(request)));
+    }
+
+    @GetMapping("/withdrawals/by-request")
+    public AjaxResult withdrawalByRequest(HttpServletRequest request, @RequestParam String key)
+    {
+        return AjaxResult.success(service.withdrawalByRequest(auth.requireUserId(request), key));
     }
 
     @GetMapping("/withdrawals/{id}")

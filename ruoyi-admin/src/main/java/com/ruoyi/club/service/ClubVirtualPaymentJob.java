@@ -31,14 +31,20 @@ public class ClubVirtualPaymentJob
                 // Persist the attempt BEFORE external work, even when that work fails.
                 // Old failures move behind unchecked orders, including after a restart.
                 jdbc.update("update club_virtual_payment set payment_checked_at=current_timestamp(6),updated_at=updated_at where payment_no=?",no);
-                if("created".equals(row.get("status")))app.syncWechatPayment(((Number)row.get("user_id")).longValue(),((Number)row.get("order_id")).longValue());
+                if("created".equals(row.get("status"))) {
+                    Map<String,Object> synchronizedPayment=app.syncWechatPayment(((Number)row.get("user_id")).longValue(),((Number)row.get("order_id")).longValue());
+                    if(synchronizedPayment!=null && "REFUND".equals(synchronizedPayment.get("tradeState"))) {
+                        appleRefunds.reconcile(no);
+                        continue;
+                    }
+                }
                 gateway.confirmDelivery(no);
             } catch(Exception error) {
                 // Never log remote bodies or signing credentials.
                 LOG.warn("Virtual payment reconciliation pending: {} ({})",no,error.getClass().getSimpleName());
             }
         }
-        for(Map<String,Object> row:jdbc.queryForList("select p.payment_no,p.refund_no,p.refund_status,v.order_type from club_payment p join club_virtual_payment v on v.payment_no=p.payment_no where v.environment=0 and p.status='success' and ((p.refund_status='processing' and v.refund_no is not null) or p.refund_status='apple_pending' or v.order_type=7) order by v.refund_checked_at,v.payment_no limit 100"))
+        for(Map<String,Object> row:jdbc.queryForList("select p.payment_no,p.refund_no,p.refund_status,v.order_type from club_payment p join club_virtual_payment v on v.payment_no=p.payment_no where v.environment=0 and p.status='success' and ((p.refund_status in ('pending','processing') and v.refund_no is not null) or p.refund_status='apple_pending' or v.order_type=7) order by v.refund_checked_at,v.payment_no limit 100"))
         {
             String no=row.get("payment_no").toString();
             try {
@@ -47,7 +53,9 @@ public class ClubVirtualPaymentJob
                     appleRefunds.reconcile(no);
                     continue;
                 }
-                com.wechat.pay.java.service.refund.model.RefundNotification confirmed=gateway.confirmedRefund(no,row.get("refund_no").toString());
+                com.wechat.pay.java.service.refund.model.RefundNotification confirmed="pending".equals(row.get("refund_status"))
+                        ? gateway.submitPendingRefund(no,row.get("refund_no").toString())
+                        : gateway.confirmedRefund(no,row.get("refund_no").toString());
                 if(confirmed!=null)afterSale.completeWechatRefund(confirmed);
             } catch(Exception error) { LOG.warn("Virtual refund reconciliation pending: {} ({})",no,error.getClass().getSimpleName()); }
         }

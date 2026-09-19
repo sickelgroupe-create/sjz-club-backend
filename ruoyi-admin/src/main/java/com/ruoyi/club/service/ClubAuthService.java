@@ -23,6 +23,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -182,7 +183,7 @@ public class ClubAuthService
                 account, phone, passwordEncoder.encode(password), "用户" + phone.substring(7), "user", "active");
         initializeUser(userId);
         jdbc.update("update club_user set last_login_at=now() where id=?", userId);
-        return issueTokens(userId,true);
+        return issueTokens(userId);
     }
 
     public Map<String, Object> phoneCodeLogin(Map<String, Object> input)
@@ -558,7 +559,10 @@ public class ClubAuthService
                     .queryParam("appid", wechatAppId).queryParam("secret", wechatAppSecret)
                     .queryParam("js_code", code).queryParam("grant_type", "authorization_code")
                     .build().encode().toUri();
-            String body = new RestTemplate().getForObject(uri, String.class);
+            SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+            factory.setConnectTimeout(10000);
+            factory.setReadTimeout(10000);
+            String body = new RestTemplate(factory).getForObject(uri, String.class);
             Map<String, Object> result = JSON.parseObject(body, Map.class);
             if (result == null) throw new ServiceException("微信登录服务返回异常");
             if (result.get("errcode") != null && number(result.get("errcode")) != 0L)
@@ -592,7 +596,9 @@ public class ClubAuthService
             throw new ServiceException("刷新令牌已失效，请重新登录");
         }
         Long userId = number(rows.get(0).get("user_id"));
-        jdbc.update("update club_user_token set revoked_at=now() where id=?", rows.get(0).get("id"));
+        // Consume once, even if concurrent requests both read the same still-valid token.
+        int consumed = jdbc.update("update club_user_token set revoked_at=now() where id=? and revoked_at is null and expires_at>now()", rows.get(0).get("id"));
+        if (consumed != 1) throw new ServiceException("刷新令牌已失效，请重新登录");
         return issueTokens(userId,"bind_refresh".equals(text(rows.get(0).get("token_type"))));
     }
 

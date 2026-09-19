@@ -16,10 +16,12 @@ public class ClubSandboxGuard implements InitializingBean {
  public ClubSandboxGuard(Environment env,DataSource source){this.env=env;this.source=source;}
  @Override public void afterPropertiesSet() throws Exception {
   boolean sandbox=Arrays.asList(env.getActiveProfiles()).contains("sandbox");
-  if(!sandbox && ("simulation".equals(paymentMode)||"standalone".equals(authMode)))
+  // Payment execution accepts case-insensitive mode names. The startup safety
+  // boundary must match that behavior, otherwise SIMULATION bypasses isolation.
+  if(!sandbox && ("simulation".equalsIgnoreCase(paymentMode)||"standalone".equalsIgnoreCase(authMode)))
    throw new IllegalStateException("独立模拟模式只能在 sandbox 配置中运行");
   if(!sandbox)return;
-  if(!"simulation".equals(paymentMode)||!"standalone".equals(authMode))
+  if(!"simulation".equalsIgnoreCase(paymentMode)||!"standalone".equals(authMode))
    throw new IllegalStateException("联调环境必须使用独立账号和模拟支付");
   if(!"disabled".equals(env.getProperty("club.wechat-login-mode","disabled")))
    throw new IllegalStateException("联调环境必须关闭微信登录");

@@ -109,6 +109,8 @@ public class ClubWechatPayService
 
     public Refund refund(String paymentNo, String refundNo, BigDecimal amount, String reason)
     {
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new ServiceException("微信退款提交必须在审核事务提交之后执行");
         if (ClubVirtualPayGateway.owns(paymentNo)) return virtualPay.refund(paymentNo, refundNo, amount);
         initialize();
         CreateRequest request = new CreateRequest();
@@ -118,6 +120,20 @@ public class ClubWechatPayService
         AmountReq money = new AmountReq();
         long cents = cents(amount); money.setTotal(cents); money.setRefund(cents); money.setCurrency("CNY"); request.setAmount(money);
         return refunds.create(request);
+    }
+
+    /** A definitive missing refund is distinct from a transient query failure. */
+    public Refund queryRefund(String refundNo)
+    {
+        initialize();
+        com.wechat.pay.java.service.refund.model.QueryByOutRefundNoRequest request = new com.wechat.pay.java.service.refund.model.QueryByOutRefundNoRequest();
+        request.setOutRefundNo(refundNo);
+        try { return refunds.queryByOutRefundNo(request); }
+        catch (com.wechat.pay.java.core.exception.ServiceException failure)
+        {
+            if(failure.getHttpStatusCode()==404 && "RESOURCE_NOT_EXISTS".equals(failure.getErrorCode()))return null;
+            throw failure;
+        }
     }
 
     public Transaction query(String paymentNo)
