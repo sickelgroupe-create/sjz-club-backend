@@ -39,8 +39,8 @@ database/002-seed.sql：系统配置、62 个菜单节点、角色权限、字�
 
 需要 JDK 8（pom.xml 源码目标为 Java 8）、Maven 3、MySQL 8、Redis、Nginx。Redis 单独配置认证，仅内网监听；本包不包含数据库/Redis 安装程序。
 
-后端根目录运行 mvn clean package -DskipTests，产物为 ruoyi-admin/target/ruoyi-admin.jar。
-该命令跳过测试，不代表业务验收；验证时另运行 mvn test。
+后端根目录运行 `mvn clean package`，执行自动测试并生成 ruoyi-admin/target/ruoyi-admin.jar。
+不要以 `-DskipTests` 的构建结果作为业务验收；自动测试也不代替新环境联调。
 
 将 jar 放到 /opt/sjz-club/app.jar。创建专用系统用户 sjz，以及其可读写的 /var/lib/sjz-club、/var/log/sjz-club；上传目录应为 /var/lib/sjz-club/uploads。
 复制 settings.env.example 到仓库以外的 /etc/sjz-club/settings.env，填写数据库、Redis、随机令牌密钥、身份加密密钥、域名等真实配置。限制配置文件读取权限；不要提交到 Git。
@@ -58,6 +58,8 @@ nginx.conf.example 提供 API、后台及可选 H5 的三个域名配置，需�
 
 默认关闭微信登录、手机号授权、普通支付和虚拟支付。启用前必须由运营方单独提供自己的 AppID、AppSecret、商户证书、虚拟支付 AppKey 等，并配置微信后台合法域名、消息回调和商品映射。
 不要认为复制源码就完成了微信支付接入。本次没有做付款或退款，也没有更改任何线上配置。
+
+详细的开关、三种回调地址及 2026-09-19 旧库升级顺序见 [PAYMENT_DEPLOYMENT.md](PAYMENT_DEPLOYMENT.md)。此次支付修复新增两列核对时间：新空库的 001 已包含；已有数据库必须先执行文档指定的增量 SQL，再启动新后端，不能直接覆盖 001。
 
 ## 6. 空系统与现网迁移的区别
 

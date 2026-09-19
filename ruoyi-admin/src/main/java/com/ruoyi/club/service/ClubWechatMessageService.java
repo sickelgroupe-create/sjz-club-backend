@@ -12,7 +12,8 @@ import com.wechat.pay.java.service.refund.model.RefundNotification;
 @Service
 public class ClubWechatMessageService {
     private final JdbcTemplate jdbc;private final ClubAppService app;private final ClubVirtualPayGateway gateway;private final ClubAfterSaleService afterSale;
-    public ClubWechatMessageService(JdbcTemplate jdbc,ClubAppService app,ClubVirtualPayGateway gateway,ClubAfterSaleService afterSale){this.jdbc=jdbc;this.app=app;this.gateway=gateway;this.afterSale=afterSale;}
+    private final ClubAppleRefundService appleRefunds;
+    public ClubWechatMessageService(JdbcTemplate jdbc,ClubAppService app,ClubVirtualPayGateway gateway,ClubAfterSaleService afterSale,ClubAppleRefundService appleRefunds){this.jdbc=jdbc;this.app=app;this.gateway=gateway;this.afterSale=afterSale;this.appleRefunds=appleRefunds;}
     @Transactional
     public JSONObject handle(JSONObject event) {
         String kind=event.getString("Event");
@@ -29,12 +30,17 @@ public class ClubWechatMessageService {
             String no=event.getString("MchOrderId");Map<String,Object> payment=payment(no,event);
             if(!Integer.valueOf(0).equals(event.getInteger("RetCode")))throw new IllegalStateException("Refund not successful");
             String refund=event.getString("MchRefundId");
-            if(refund==null || !refund.matches("[A-Za-z0-9_-]{8,32}") || payment.get("refund_no")==null)throw new IllegalStateException("Refund requires reconciliation");
+            if(refund==null || !refund.matches("[A-Za-z0-9_-]{8,32}"))throw new IllegalStateException("Invalid refund identity");
             Map<String,Object> remote=gateway.remote(no);
-            if(!event.getString("WxOrderId").equals(remote.get("wx_order_id")))throw new IllegalStateException("Payment identity mismatch");
-            jdbc.update("update club_virtual_payment set refund_no=? where payment_no=? and (refund_no is null or refund_no=?)",refund,no,refund);
-            RefundNotification confirmed=gateway.confirmedRefund(no,payment.get("refund_no").toString());
+            if(event.getString("WxOrderId")==null || !event.getString("WxOrderId").equals(remote.get("wx_order_id")))throw new IllegalStateException("Payment identity mismatch");
+            if(Integer.valueOf(7).equals(remote.get("order_type"))) {
+                appleRefunds.confirmNotification(no,refund,event.getString("WxRefundId"),event.getLong("RefundFee"),event.getString("WxOrderId"));
+                return null;
+            }
+            if(payment.get("refund_no")==null)throw new IllegalStateException("Refund requires reconciliation");
+            RefundNotification confirmed=gateway.confirmedRefund(no,payment.get("refund_no").toString(),refund);
             if(confirmed==null || !confirmed.getRefundId().equals(event.getString("WxRefundId")) || !confirmed.getAmount().getRefund().equals(event.getLong("RefundFee")))throw new IllegalStateException("Refund query not confirmed");
+            if(jdbc.update("update club_virtual_payment set refund_no=? where payment_no=? and (refund_no is null or refund_no=?)",refund,no,refund)!=1)throw new IllegalStateException("Refund identity conflict");
             afterSale.completeWechatRefund(confirmed);return null;
         }
         throw new IllegalStateException("Unsupported payment event");

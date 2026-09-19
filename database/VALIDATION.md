@@ -10,3 +10,5 @@
 - 管理员设置工具生成临时随机密码的 BCrypt 2a 散列，激活测试库管理员成功且密码校验通过；测试凭据不在本目录。
 
 此记录不等于三端应用启动、现网迁移、支付或退款的验收。
+
+2026-09-19 增补：001 中的 club_virtual_payment 增加 payment_checked_at、refund_checked_at 及配套索引；旧库升级脚本为 migrations/20260919_virtual_payment_reconciliation.sql，表数仍为 74。新增支付业务回归在隔离 H2 MySQL 模式执行，含事务回滚和并发冲正验证；此轮没有重新在 MySQL 运行完整导入，也未升级任何生产数据库。不要把 09-16 的导入记录当作新迁移已经在线执行的证据。

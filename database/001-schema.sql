@@ -957,11 +957,15 @@ CREATE TABLE `club_virtual_payment` (
   `remote_order_id` varchar(128) DEFAULT NULL,
   `delivery_confirmed` tinyint NOT NULL DEFAULT '0',
   `refund_no` varchar(32) DEFAULT NULL,
+  `payment_checked_at` datetime(6) DEFAULT NULL,
+  `refund_checked_at` datetime(6) DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`payment_no`),
   UNIQUE KEY `uk_virtual_refund` (`refund_no`),
-  KEY `idx_virtual_reconcile` (`remote_status`,`updated_at`)
+  KEY `idx_virtual_reconcile` (`remote_status`,`updated_at`),
+  KEY `idx_virtual_payment_check` (`payment_checked_at`,`payment_no`),
+  KEY `idx_virtual_refund_check` (`refund_checked_at`,`payment_no`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;

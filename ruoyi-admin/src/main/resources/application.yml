@@ -150,8 +150,8 @@ club:
   wechat-pay-private-key-path: "${WECHAT_PAY_PRIVATE_KEY_PATH:}"
   wechat-pay-public-key-path: "${WECHAT_PAY_PUBLIC_KEY_PATH:}"
   wechat-pay-public-key-id: "${WECHAT_PAY_PUBLIC_KEY_ID:}"
-  wechat-pay-notify-url: "${WECHAT_PAY_NOTIFY_URL:${PUBLIC_API_BASE:http://localhost:8080}/pay/wechat/notify}"
-  wechat-pay-refund-notify-url: "${WECHAT_PAY_REFUND_NOTIFY_URL:${PUBLIC_API_BASE:http://localhost:8080}/pay/wechat/refund-notify}"
+  wechat-pay-notify-url: "${WECHAT_PAY_NOTIFY_URL:${PUBLIC_API_BASE:http://localhost:8080}/app/pay/wechat/notify}"
+  wechat-pay-refund-notify-url: "${WECHAT_PAY_REFUND_NOTIFY_URL:${PUBLIC_API_BASE:http://localhost:8080}/app/pay/wechat/refund-notify}"
   identity-encryption-key: ${CLUB_IDENTITY_ENCRYPTION_KEY:}
   access-token-minutes: ${APP_ACCESS_TOKEN_MINUTES:30}
   refresh-token-days: ${APP_REFRESH_TOKEN_DAYS:14}

@@ -17,4 +17,6 @@
 
 后续结构变更请新增 `migrations/YYYYMMDD_用途.sql`，在同一拉取请求中写明适用旧版本、备份要求、执行顺序和验证办法。不要只手动修改开发数据库而遗漏 SQL；也不要对已有业务库重新导入 001、002。
 
+本次新增 `migrations/20260919_virtual_payment_reconciliation.sql`：仅用于已有 20260912 虚拟支付表且尚无 `payment_checked_at`、`refund_checked_at` 的旧库，先备份并停服务，再执行一次。新空库的 001 已合并，不要重复执行。操作和校验见 [支付升级说明](../deploy/PAYMENT_DEPLOYMENT.md)。
+
 此目录不含现网客户、订单、支付、身份资料或数据库备份。需要现网迁移时，通过安全渠道另行交付，不能提交 Git。

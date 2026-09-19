@@ -121,9 +121,17 @@ public class ClubVirtualPayGateway
     {
         Map<String,Object> saved=record(no);
         if(saved.get("refund_no")==null)return null;
+        return confirmedRefund(no,businessRefundNo,saved.get("refund_no").toString());
+    }
+
+    /** Verify an authenticated callback's candidate before persisting its refund ID. */
+    public RefundNotification confirmedRefund(String no, String businessRefundNo, String refundNo)
+    {
+        if(refundNo==null || !refundNo.matches("[A-Za-z0-9_-]{8,32}"))throw new ServiceException("退款单号无效");
+        Map<String,Object> saved=record(no);
         int env=Integer.parseInt(saved.get("environment").toString());
         if(env!=0)throw new ServiceException("沙箱退款不可用于正式资金冲正");
-        JSONObject refund=client.query(saved.get("openid").toString(),saved.get("refund_no").toString(),env);
+        JSONObject refund=client.query(saved.get("openid").toString(),refundNo,env);
         Integer state=refund.getInteger("status");
         if(state==null || (state!=5 && state!=8))return null;
         int expected=Integer.parseInt(saved.get("expected_fen").toString());
@@ -139,6 +147,25 @@ public class ClubVirtualPayGateway
         result.setRefundId(refund.getString("wx_order_id"));result.setRefundStatus(Status.SUCCESS);
         Amount amount=new Amount();amount.setRefund((long)expected);amount.setTotal((long)expected);amount.setCurrency("CNY");result.setAmount(amount);
         return result;
+    }
+
+    /** Original-order evidence also recovers Apple refunds whose notification was lost.
+     * query_order documents status 5/8 as refunded and left_fee as remaining after refunds.
+     * No refund transaction ID is invented when only the original order is available.
+     */
+    public JSONObject confirmedAppleRefund(String no)
+    {
+        Map<String,Object> saved=record(no);
+        if(Integer.parseInt(saved.get("environment").toString())!=0)
+            throw new ServiceException("沙箱退款不可用于正式资金冲正");
+        JSONObject original=remote(no);
+        if(!Integer.valueOf(7).equals(original.getInteger("order_type")))return null;
+        Integer state=original.getInteger("status");
+        if(!Integer.valueOf(5).equals(state) && !Integer.valueOf(8).equals(state))return null;
+        validatePaid(original,Integer.parseInt(saved.get("expected_fen").toString()));
+        if(!Integer.valueOf(0).equals(original.getInteger("left_fee")))
+            throw new ServiceException("苹果退款尚未确认全额退回，请人工核对");
+        return original;
     }
 
     private Map<String,Object> record(String no)

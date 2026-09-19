@@ -584,6 +584,12 @@ public class ClubBusinessService
     private void refundLocked(Map<String, Object> order, String operatorType, Long operatorId, String note, Long aftersaleId,
             BigDecimal refundAmount)
     {
+        refundLocked(order,operatorType,operatorId,note,aftersaleId,refundAmount,false);
+    }
+
+    private void refundLocked(Map<String, Object> order, String operatorType, Long operatorId, String note, Long aftersaleId,
+            BigDecimal refundAmount, boolean appleRefund)
+    {
         Long orderId = longValue(order.get("id"));
         String current = text(order.get("status"));
         if ("refunded".equals(current)) return;
@@ -614,7 +620,7 @@ public class ClubBusinessService
         jdbc.update("insert into club_payment_audit(payment_id,order_id,user_id,action,result_status,request_id,detail) values(?,?,?,?,?,?,?)",
                 paymentRow.get("id"), orderId, order.get("user_id"), "refund", "refunded",
                 aftersaleId == null ? "REFUND-ORDER-" + orderId : "REFUND-AFTERSALE-" + aftersaleId,
-                (simulated?"模拟支付退款（无真实资金），金额：":realWechat ? "微信支付原路全额退款，金额：" : "钱包余额全额退回，金额：") + refundAmount);
+                (appleRefund?"Apple支付已确认全额退款，金额：":simulated?"模拟支付退款（无真实资金），金额：":realWechat ? "微信支付原路全额退款，金额：" : "钱包余额全额退回，金额：") + refundAmount);
         reverseSettlement(orderId, aftersaleId, refundAmount, paidAmount);
         jdbc.update("update club_teen_daily_spend set used_amount=greatest(0,used_amount-?),updated_at=now() where user_id=? and spend_date=date(?)",
                 refundAmount, order.get("user_id"), paymentRow.get("paid_at"));
@@ -624,9 +630,17 @@ public class ClubBusinessService
         jdbc.update("update club_product set sales=greatest(0,sales-?) where id=?", order.get("quantity"), order.get("product_id"));
         jdbc.update("update club_order set status='refunded',refunded_at=now(),version=version+1 where id=? and status='refunding'", orderId);
         reverseExperience(orderId);
-        logOrder(orderId, "refunding", "refunded", operatorType, operatorId, (simulated?"模拟支付退款完成，金额：":realWechat ? "微信原路退款完成，退款金额：" : "钱包余额退款完成，退款金额：") + refundAmount);
-        notifyUser(order.get("user_id"), simulated?"模拟退款完成":realWechat ? "微信退款完成" : "余额退款完成",
-                simulated?"模拟支付退款已完成，没有真实资金变动。":realWechat ? "订单已原路退回微信支付" + refundAmount + "元。" : "订单退款" + refundAmount + "元已退回钱包余额。", orderId);
+        logOrder(orderId, "refunding", "refunded", operatorType, operatorId, (appleRefund?"Apple退款及本地冲正完成，金额：":simulated?"模拟支付退款完成，金额：":realWechat ? "微信原路退款完成，退款金额：" : "钱包余额退款完成，退款金额：") + refundAmount);
+        notifyUser(order.get("user_id"), appleRefund?"苹果支付退款完成":simulated?"模拟退款完成":realWechat ? "微信退款完成" : "余额退款完成",
+                appleRefund?"Apple已确认订单退款"+refundAmount+"元，到账情况请以Apple账单为准。":simulated?"模拟支付退款已完成，没有真实资金变动。":realWechat ? "订单已原路退回微信支付" + refundAmount + "元。" : "订单退款" + refundAmount + "元已退回钱包余额。", orderId);
+    }
+
+    /** Called only after ClubAppleRefundService verifies a completed external refund. */
+    @Transactional
+    public void executeExternalAppleRefund(Long orderId, Long aftersaleId, BigDecimal refundAmount, String note)
+    {
+        Map<String,Object> order=jdbc.queryForMap("select * from club_order where id=? for update",orderId);
+        refundLocked(order,"apple",null,note,aftersaleId,refundAmount,true);
     }
 
     @Transactional
