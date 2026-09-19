@@ -18,7 +18,7 @@ Windows，Node.js 24.18.0 / npm 11.16.0，JDK 8 / Maven 3.9.11。使用独立仓
 ## 验证结果
 
 - 后端 clean package（跳过测试）：成功生成 ruoyi-admin.jar。
-- 数据库：此前已在隔离 MySQL 8.4.11 空库重新导入 74 张表及初始化配置，详情见 database/VALIDATION.md。
+- 数据库：此前已在隔离 MySQL 8.4.11 空库重新导入 74 张表及初始化配置，详情见 [database/VALIDATION.md](../database/VALIDATION.md)。
 - 管理后台：普通 npm ci、生产构建均成功，录音模块 3 项无真实麦克风测试通过。
 - 小程序：普通 npm ci、微信小程序构建、H5 构建均成功。
 - 小程序 119 项自动测试全部通过，路由、业务流程和冻结检查通过。

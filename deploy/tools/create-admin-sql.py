@@ -15,7 +15,7 @@ def main():
     if not 12 <= len(raw) <= 72:
         raise SystemExit("Password must be 12-72 UTF-8 bytes")
     hashed = bcrypt.hashpw(raw, bcrypt.gensalt(rounds=12, prefix=b"2a")).decode("ascii")
-    target = Path(__file__).resolve().parents[1] / "database" / "003-admin.local.sql"
+    target = Path(__file__).resolve().parents[2] / "database" / "003-admin.local.sql"
     sql = ("-- PRIVATE: initial setup only; do not commit this file.\n"
            "UPDATE sys_user SET password='" + hashed + "',status='0',pwd_update_date=NOW() "
            "WHERE user_id=1 AND user_name='admin' AND password='!UNINITIALIZED!';\n"
@@ -29,4 +29,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

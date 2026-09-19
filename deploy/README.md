@@ -1,14 +1,14 @@
-# 新服务器部署入口（2026-09-16 整理）
+# 新服务器部署入口（2026-09-19 目录更新）
 
-本目录集中保存新环境所需的数据库初始化和服务器配置模板。整个工程仍保持两个相邻文件夹：
+本目录保存服务器配置模板和数据库导入工具。工程仅保留三个独立仓库文件夹：
 
-- 三角洲俱乐部：小程序与 H5 用户端。
-- 若依/RuoYi-Vue：后端，本目录位于其中。
-- 若依/RuoYi-Vue3：管理后台。
+- sjz-club-app：小程序与 H5 用户端。
+- sjz-club-backend：后端，本目录位于其中；SQL 统一位于后端根目录 database/。
+- sjz-club-admin：管理后台。
 
-只需从这两个源码目录取部署材料，不需要外层 deployment 目录。本地原有文件保留，未操作现网。
+不再依赖外层 deployment、若依或 github-split 目录。本文的命令与 database/ 路径均以 sjz-club-backend 根目录为起点。
 
-如果通过独立 GitHub 仓库交接，对应的是 sjz-club-backend（本仓库）、sjz-club-admin 和 sjz-club-app；它们各自可独立构建。下文的相对路径描述本地双文件夹布局；在独立仓库中到相应仓库查看部署说明。配置文件和数据库以本 deploy 目录为准。
+三个仓库可独立构建；统一克隆及分支协作方式见 [CONTRIBUTING.md](../CONTRIBUTING.md)。服务器模板以本 deploy/ 目录为准，数据库以 [database/README.md](../database/README.md) 为准。
 
 ## 1. 数据库：新环境只导入两个文件
 
@@ -25,7 +25,7 @@ database/002-seed.sql：系统配置、62 个菜单节点、角色权限、字�
 
 脚本拒绝向已有表的数据库导入，需要输入数据库密码并确认目标。也可通过数据库管理工具依次执行 001、002；必须保证目标是空库。
 
-不要再执行 sql/ 下的历史迁移，也不要把 database-schema-reference 当作初始化入口；最终结构已经包含变更。sql/ 留作历史审计及旧环境升级参考，其中存在回滚、测试夹具与清理脚本，不能一键全执行。
+不要再执行 database/migrations/ 下的历史迁移，也不要把 database/schema-reference/ 当作初始化入口；最终结构已经包含变更。database/local-private/ 如存在，属于本机保留的原始 SQL，可能有测试夹具、回滚和清理操作，已排除 Git，不能一键执行。
 
 ## 2. 设置自己的管理账号密码
 
@@ -50,7 +50,7 @@ database/002-seed.sql：系统配置、62 个菜单节点、角色权限、字�
 
 ## 4. 管理后台与小程序
 
-管理后台操作见 ../.. 中的 RuoYi-Vue3/部署说明.md；用户端见 三角洲俱乐部/部署说明.md。
+管理后台操作见 [sjz-club-admin 部署说明](https://github.com/sickelgroupe-create/sjz-club-admin/blob/main/部署说明.md)；用户端见 [sjz-club-app 部署说明](https://github.com/sickelgroupe-create/sjz-club-app/blob/main/部署说明.md)。
 nginx.conf.example 提供 API、后台及可选 H5 的三个域名配置，需替换域名、站点目录及 HTTPS 证书路径。证书要由同事在新服务器申请，不包含在源码内。
 运行 nginx -t 通过后再启用。只部署微信小程序时可省略 H5 站点。
 

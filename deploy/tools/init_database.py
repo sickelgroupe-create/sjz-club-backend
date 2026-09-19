@@ -34,7 +34,7 @@ def main():
     expected = args.host + ":" + str(args.port) + "/" + args.database
     if input("Type target to confirm [" + expected + "]: ") != expected:
         raise SystemExit("Cancelled")
-    directory = Path(__file__).resolve().parents[1] / "database"
+    directory = Path(__file__).resolve().parents[2] / "database"
     for name in ("001-schema.sql", "002-seed.sql"):
         run((directory / name).read_text(encoding="utf-8"))
         print("Imported " + name)
@@ -45,4 +45,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

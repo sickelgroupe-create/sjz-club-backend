@@ -1,5 +1,4 @@
 settings.env
-database/*.local.sql
 *.pem
 *.key
 *.p12
@@ -7,4 +6,3 @@ database/*.local.sql
 backups/
 uploads/
 __pycache__/
-
